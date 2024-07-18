@@ -11,8 +11,12 @@ const CanvasserApp = () => {
     email: '',
     password: '',
     name: '',
-    phone: ''
+    phone: '',
+    deviceModel: ''
   });
+  const [lastFetchDate, setLastFetchDate] = useState(new Date().toDateString());
+
+  const API_URL = 'http://localhost:5001/api';
 
   useEffect(() => {
     if ("geolocation" in navigator) {
@@ -25,31 +29,86 @@ const CanvasserApp = () => {
     }
   }, []);
 
+  useEffect(() => {
+    if (isCheckedIn) {
+      fetchTodaySales();
+    }
+  }, [isCheckedIn]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const today = new Date().toDateString();
+      if (today !== lastFetchDate) {
+        fetchTodaySales();
+      }
+    }, 60000); // Check every minute
+
+    return () => clearInterval(interval);
+  }, [lastFetchDate]);
+
   const handleInputChange = (e) => {
     const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
+    setFormData(prevState => ({
+      ...prevState,
+      [name]: value
+    }));
   };
 
-  const simulateBackendCall = (action, data) => {
-    return new Promise((resolve, reject) => {
-      setTimeout(() => {
-        if (action === 'register') {
-          resolve({ success: true, message: 'Registration successful. Please sign in.' });
-        } else if (action === 'login') {
-          resolve({ success: true, user: { email: data.email, name: 'John Doe' } });
-        } else if (action === 'checkIn') {
-          resolve({ success: true, message: 'Checked in successfully.' });
-        } else {
-          reject({ success: false, message: 'Unknown action' });
-        }
-      }, 1000);
+  const registerUser = async (userData) => {
+    const response = await fetch(`${API_URL}/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(userData)
     });
+    if (!response.ok) {
+      throw new Error('Registration failed');
+    }
+    return response.json();
+  };
+
+  const loginUser = async (credentials) => {
+    const response = await fetch(`${API_URL}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(credentials)
+    });
+    if (!response.ok) {
+      throw new Error('Login failed');
+    }
+    return response.json();
+  };
+
+  const fetchTodaySales = async () => {
+    const today = new Date().toDateString();
+    if (today !== lastFetchDate) {
+      setSales([]); // Reset sales if it's a new day
+      setLastFetchDate(today);
+    }
+
+    if (isCheckedIn) {
+      try {
+        const token = localStorage.getItem('token');
+        const response = await fetch(`${API_URL}/sales`, {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        if (!response.ok) {
+          throw new Error('Failed to fetch sales');
+        }
+        const data = await response.json();
+        setSales(data);
+      } catch (error) {
+        console.error('Error fetching sales:', error);
+        setMessage('Error fetching today\'s sales');
+      }
+    }
   };
 
   const handleRegister = async (e) => {
     e.preventDefault();
     try {
-      const response = await simulateBackendCall('register', formData);
+      const response = await registerUser(formData);
       setMessage(response.message);
       setIsRegistering(false);
     } catch (error) {
@@ -60,8 +119,9 @@ const CanvasserApp = () => {
   const handleSignIn = async (e) => {
     e.preventDefault();
     try {
-      const response = await simulateBackendCall('login', formData);
+      const response = await loginUser(formData);
       setUser(response.user);
+      localStorage.setItem('token', response.token);
       setMessage(`Welcome, ${response.user.name}!`);
     } catch (error) {
       setMessage('Sign in failed. Please try again.');
@@ -70,10 +130,26 @@ const CanvasserApp = () => {
 
   const handleCheckIn = async () => {
     try {
-      const response = await simulateBackendCall('checkIn', { user, location });
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${API_URL}/auth/check-in`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ location })
+      });
+
+      if (!response.ok) {
+        throw new Error('Check-in failed');
+      }
+
+      const data = await response.json();
       setIsCheckedIn(true);
-      setMessage(response.message);
+      setMessage(data.message);
+      fetchTodaySales();
     } catch (error) {
+      console.error('Check-in error:', error);
       setMessage('Check-in failed. Please try again.');
     }
   };
@@ -84,16 +160,36 @@ const CanvasserApp = () => {
     setMessage('Checked out. Sales reset.');
   };
 
-  const handleSaleSubmit = (e) => {
+  const handleSaleSubmit = async (e) => {
     e.preventDefault();
-    const newSale = {
-      timestamp: new Date().toLocaleString(),
-      customerDetails: { ...formData }
-    };
-    setSales(prevSales => [...prevSales, newSale]);
-    setFormData({ email: '', password: '', name: '', phone: '' });
-    setMessage('Sale recorded successfully!');
-    setTimeout(() => setMessage(''), 3000);
+    try {
+      const token = localStorage.getItem('token');
+      const saleData = {
+        customerName: formData.name,
+        customerPhone: formData.phone,
+        customerEmail: formData.email,
+        deviceModel: formData.deviceModel
+      };
+      const response = await fetch(`${API_URL}/sales`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(saleData)
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to record sale');
+      }
+
+      await fetchTodaySales(); // Refresh the sales after successful submission
+      setMessage('Sale recorded successfully!');
+      setFormData({ email: '', password: '', name: '', phone: '', deviceModel: '' });
+    } catch (error) {
+      console.error('Error recording sale:', error);
+      setMessage('Failed to record sale. Please try again.');
+    }
   };
 
   const renderAuthForm = () => (
@@ -236,9 +332,9 @@ const CanvasserApp = () => {
           <h2 className="text-xl font-semibold">Today's Sales: {sales.length}</h2>
           {sales.map((sale, index) => (
             <div key={index} className="mt-2 text-sm">
-              <p>Sale at {sale.timestamp}</p>
-              <p>Customer: {sale.customerDetails.name}</p>
-              <p>Device: {sale.customerDetails.deviceModel}</p>
+              <p>Sale at {new Date(sale.createdAt).toLocaleString()}</p>
+              <p>Customer: {sale.customerName}</p>
+              <p>Device: {sale.deviceModel}</p>
             </div>
           ))}
         </div>
